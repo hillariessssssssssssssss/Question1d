@@ -1,0 +1,69 @@
+// State variables and Constants
+INT TEMP_HYSTERESIS_COUNT = 20; 
+INT TEMP_21C = 145; 
+INT TEMP_25C = 154; 
+INT SMOKE_ALARM_COUNT = 328;
+BOOL IS_AWAY_MODE = FALSE;
+TIMER LIGHT_TIMER = 0; // Countdown timer in seconds
+BOOL HEATING_STATE = OFF;
+BOOL COOLING_STATE = OFF;
+
+// Loop is executed continuously (e.g., every 500ms)
+FUNCTION MainLoop()
+    READ TEMP_COUNT FROM ADC_TMP36;
+    READ SMOKE_COUNT FROM ADC_SMOKE;
+    READ MOTION_PIR FROM DI_PIR;
+    READ DOOR_STATE FROM DI_REED;
+    
+    // 1. Safety Check (Highest Priority)
+    IF SMOKE_COUNT >= SMOKE_ALARM_COUNT THEN
+        HVAC_RELAY = OFF; COOLING_FAN_PWM = 0; // Fail-safe for comfort
+        ELECTRONIC_STRIKE = ENGAGED;
+        SIREN = ON;
+        RETURN; // Stop all other processing
+    END IF
+
+    // --- 2. Security Check ---
+    IF IS_AWAY_MODE AND DOOR_STATE == OPEN THEN
+        ELECTRONIC_STRIKE = ENGAGED; // Keep the door locked
+        SIREN = ON; // Sound the siren
+        START_TIMER(30); // Siren for 30s
+        // Wait for UART code/timer expiry
+        WHILE (TIMER_RUNNING OR SIREN == ON)
+            IF UART_RX_CODE == DISARM_CODE THEN
+                SIREN = OFF; IS_AWAY_MODE = FALSE; TIMER_STOP();
+            END IF
+        END WHILE
+    ELSE
+        ELECTRONIC_STRIKE = DISENGAGED; // Normal operation
+    END IF
+
+    // --- 3. Comfort Control (HVAC) ---
+    // Heating Control (Includes +1 degree C hysteresis)
+    IF TEMP_COUNT < TEMP_21C - TEMP_HYSTERESIS_COUNT THEN 
+        HVAC_RELAY = HEAT_ON; HEATING_STATE = TRUE; COOLING_STATE = FALSE;
+    ELSE IF HEATING_STATE AND TEMP_COUNT > TEMP_21C THEN
+        HVAC_RELAY = OFF; HEATING_STATE = FALSE;
+    END IF
+
+    // Cooling/Fan Control (Includes -1 degree C hysteresis)
+    IF TEMP_COUNT > TEMP_25C + TEMP_HYSTERESIS_COUNT THEN
+        HVAC_RELAY = COOL_ON; COOLING_FAN_PWM = 800; // 80% PWM for fan
+        COOLING_STATE = TRUE; HEATING_STATE = FALSE;
+    ELSE IF COOLING_STATE AND TEMP_COUNT < TEMP_25C THEN
+        HVAC_RELAY = OFF; COOLING_FAN_PWM = 0;
+        COOLING_STATE = FALSE;
+    END IF
+    
+    // --- 4. Convenience Control (Lighting) ---
+    IF (MOTION_PIR == DETECTED OR DOOR_STATE == OPEN) AND IS_NIGHT_TIME THEN
+        LED_STRIP_PWM = 614; // 60% of 1024 (10-bit PWM)
+        LIGHT_TIMER = 180; // 3 minutes
+    ELSE IF LIGHT_TIMER > 0 THEN
+        LIGHT_TIMER = LIGHT_TIMER - 1; // Decrement every loop cycle
+        IF LIGHT_TIMER == 0 THEN
+            LED_STRIP_PWM = 0;
+        END IF
+    END IF
+
+END FUNCTION MainLoop
